@@ -1,0 +1,700 @@
+---
+title: "pt_ptrn"
+author: "Karen E Lohman"
+date: "12/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(sf) #need for most spatial bits
+library(rgdal) # this one for projections!
+library(adehabitatHR) # would put HR estimations into land mass....gotta find something different!
+library(maps) # need for coastline boundary
+library(mapdata)
+library(spatstat) # spatial pt ptrn analysis
+#library(maptools)
+#library(ks)
+#library(raster)
+library(sp) # need this for making the spatial polygon border
+library(tidyverse)
+#read in data
+biopsy_locs2 <- read.csv("~/Research/Ch_1_mtDNA_Structure/data/biopsy_locs2.csv") # using dupe free biopsy locs
+
+```
+
+Remember: a raster is just pixels w/a value + cooordinates.
+
+# Analysis to do list
+1) Home range analysis + size + degree of overlap -- change to PHRE
+  - More genetically similar haps have a greater degree of spatial overlap? [ evol hist ]
+  - Is it a border delimitation or a range restriction? [ is there a clear split btwn hap grps//herds]
+  - This may feed into an IDB test. Or do a nuclear Fst/sim?
+2) Fidelity analysis (Fst?)
+  - Recapture rates?
+3) Is this habitat use temporally stable?
+  - Recapture intervals w/in + btwn region
+  - temporal fst [ you may feel better about this is sightings show high degree fidelity]
+4) Sex biased?
+
+
+# Data Sources
+--using biopsy locs with the same day dups removed (update to bio locs + sightings w/same day dupes removed)
+
+#Methods
+
+ Repeat by haplotypes - need to consider within and between years?
+
+https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0120888#sec002
+
+Utilisation Distribution Estimation and Overlap
+ We computed the UD for individual animals to assess site fidelity at two scales: between years and within years (see Table 1):
+Between year site fidelity—the UD was computed using all the ARS locations obtained for each year for those animals tracked over multiple winters.
+
+Within year site fidelity—this was examined by calculating the UD based on ARS locations of individual foraging trips undertaken by each animal during a single year.
+
+
+### Utilization Distribution Estimation by mtDNA haplotype -- Range Ptrns -- Area Estimation & Overlap
+
+Looked for feeding ground partioning by quantifying the degree of overlap.
+
+To determine the spatial extent of the ENP feeding grounds used by each mtDNA haplotype group, a kernel density estimate of the utilization distribution was calculated (UD) using Permissible Home Range Estimation (PHRE) calculation, as they were developed to minimize overlap with land and have previously been shown to rely on a smaller number of sightings to reach asymptotic convergence of home range boundaries. [Tim Tinker https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0150547#pone.0150547.s009 ]. 
+
+In this instance PHRE calculations were deleminated with only the coastline as a range restricting border to reduce the estimate overlap with land. 
+
+A minimum sighting number of **15** observations of each haplotype was applied. 
+
+To reduce sampling bias driving spatial autocorrelation, only one sighting per individual per day was allowed (n = [add some code hurrr] total observation). [Scott will probs want more numbers but do it laters]
+ 
+We calculated a 95% UD, representing the extent of habitat use, and a 50% core density value.
+
+----there's a way to do this is arcmap w/the coastline as a barrier -- maybe easier?!
+
+### PHRE aka no land kde?
+
+*** Ask Leigh: is there a way to weight my sightings by effort? Or do we just, like, not talk about this? 
+
+*** Ask Leigh: is there a way to account for migratory overlap?
+        ---- I would think the asympotic convergence line would show us if migration corridor is causing issues (??)
+        ---- Also maybe just try dropping shoulder season pts and compare?
+        ---- Oh babes! Just plot the outlier pts...if all are below (ie migrating) then it is!
+
+Sex differences --- 
+"Differences in representative ranges between sexes were evaluated using a Kruskal–Wallis test as for the SXY. Finally, to explore individuals’ space use over the long term, we plotted the location of individuals cataloged in 2010 (Taylor, 2010) and checked if they fell within the representative ranges estimated in this study. [https://onlinelibrary.wiley.com/doi/full/10.1002/ece3.3674] "
+
+Note: Humpbacks are restricted to the water (duh) but KDE will estimate on land. Fix by using kernel home ranges with constrained boundaries (shoreline!)
+
+###Pretty HR plots
+The above fits home ranges + gives you the areas. Now for pretty plots!
+```{r}
+
+```
+
+
+
+
+##Point pattern analysis
+
+"Spatial point pattern statistics treats the spatial locations, and the values attached to them, as the response."
+
+
+Take all non-duplicate sightings of individuals w/mtDNA haplotype and try to calculate utalization distribution (UD)/kernel density estimates to quantify degree of overlap for each haplotype?
+
+Need to have three spatial data layers: owin polygon (boundary of survey area), ppp, pt_denisty layer (may not need the density layer for distance based analysis)
+
+ENP_buffered : An owin polygon layer of the sample area boundary
+```{r spatial_polygon}
+
+###STEP 1: MAKE STUDY AREA POLYGON - https://stackoverflow.com/questions/49266736/clip-spatial-polygon-by-world-map-in-r?rq=1
+## make an owin polygon of sampling area - this is a 2d observation window
+# mostly from this tutorial: https://rstudio-pubs-static.s3.amazonaws.com/202536_7a122ff56e9f4062b6b012d9921afd80.html
+# using samples df b/c only care about effort - all samples have equal chance of failing.
+
+#use the entire extent of sampling as range.
+enc <- read.csv("~/Research/tidy_datafiles/tidy_enounters.csv", na.strings = c("","NA")) %>% 
+  drop_na(Latitude_Bin) %>% #remove no loc samples
+  dplyr::filter(FreeSwimming == "Y")
+
+# pull in some world data world data -- this is whole earth but you should subset to enp.....maybe???
+data("wrld_simpl", package = 'maptools')
+# coerce sp object to sf
+world <- st_as_sf(wrld_simpl) # assume this needs a projection change....???
+# proj4string(wrld_simpl) = CRS("+proj=longlat +datum=WGS84 +no_defs 
+#     +ellps=WGS84 +towgs84=0,0,0")
+
+##make the poly for sampling range
+# make a list of the possible lat bins in sample range
+bins <- unique(enc$Latitude_Bin) # doing it this way b/c do not have sample from each lat bin
+
+#tiny loop to find extent you have data for
+c <- data.frame(Long = c(-114, -134, -114), Lat = c(30, 55, 56)) # start w/df of pts to close polygon
+for (i in bins){
+        temp1 <- enc %>% filter(Latitude_Bin == i)
+        max <- max(temp1$Long)
+        Lat <- i
+        newpt <- c(max, Lat)
+        c <- rbind(c, newpt)
+}
+
+c %<>% arrange(Lat) %>% # reorder so points make nice loop
+   mutate( Long=(Long-1)) # move polygon line slightly east as a buffer (this is easier than the functions to add buffer)
+
+c <- rbind( c, c[1,]) #close the list of points
+P <- Polygon( c ) # make the reg polygon
+ps = Polygons(list(P),1) # not sure what this is about (stackoverflow magic)
+sps = SpatialPolygons(list(ps)) # make it a spatial polygon
+# proj4string(sps) = CRS("+proj=longlat +datum=WGS84 +no_defs 
+#     +ellps=WGS84 +towgs84=0,0,0")
+
+
+proj4string(sps) = CRS("+proj=longlat +datum=WGS84 +no_defs")
+
+plot(sps) # it works!
+class(sps)
+
+#convert back for finding the diff
+surveyarea <- st_as_sf(sps)
+
+coastmap <-st_union(world)
+# proj4string(coastmap) = CRS("+proj=longlat +datum=WGS84 +no_defs 
+#     +ellps=WGS84 +towgs84=0,0,0")
+
+# difference between world polygons and the rectangle
+difference <- st_difference(surveyarea, st_union(world))
+difference <- st_difference(surveyarea, coastmap)
+# coerce back to sp
+difference <- as(difference, 'Spatial')
+# plot the result
+plot(sps) # it works!
+plot(difference)
+class(difference)
+
+##convert to an owin object --- units? projection? so many things could be issue
+ENP_buffered <- as(c$Long, c$Lat, "owin")
+
+ENP_buffered <- owin(poly=difference)
+
+```
+
+
+
+make a ppp obj - this is for all pts, need to loop it out per hap?
+p.ppp: A ppp point layer of biopsy locs with haps
+```{r ppp_obj}
+##STEP 2: MAKE THE PP OBJ
+#using the mtdna data set w/same day dupes removed. All other sampling events remain. Subset df for clarity.
+df <- biopsy_locs2 %>% 
+  drop_na(Long) %>% 
+  drop_na(dlphap) %>% 
+  dplyr::select(Long, Lat, dlphap, Sex) 
+
+range(df$Long)
+range(df$Lat)
+
+#for all pts
+mypattern <- ppp(df$Long, df$Lat, c(-134,-117), c(30,55))
+plot(mypattern) # ask about making border bigger? does this matter? seems like it should matter but idk....
+
+#Basic summary of data: type
+#summary(mypattern)
+#Ripley’s K-function:
+plot(Kest(mypattern))
+
+#Envelopes of K-function:
+plot(envelope(mypattern,Kest))
+
+#kernel smoother of density ---- is this what you need for other tutorial??
+plot(density(mypattern))
+
+#add hap and sex as marks
+marks(mypattern) <- df[, c(3,4)] # adding hap and sex as 'marks'
+###This dn work bc of the illegial pts - wth spatstat!
+
+plot(split(mypattern))
+
+#Now you can try things like the kernel smoother of mark values:
+plot(Smooth(mypattern))
+
+#
+plot(alltypes(mypattern, dlphap))
+
+```
+
+First, we’ll run an ANN analysis for Starbucks locations assuming a uniform point density across the state (i.e. a completely spatially random process).
+
+```{r}
+## rescale the pattern made above to kms
+mypattern.km <- rescale(mypattern, 1000, "km")
+
+
+ann.p <- mean(nndist(mypattern.km, k=1))
+ann.p # should give the observed nearest neighbor distance
+
+#To compute the average second nearest neighbor distance set k=2:
+mean(nndist(mypattern.km, k=2))
+```
+
+Next, we will generate the distribution of expected ANN values given a homogeneous (CSR/IRP) point process using Monte Carlo methods. This is our null model.
+
+```{r}
+n     <- 599L               # Number of simulations
+ann.r <- vector(length = n) # Create an empty object to be used to store simulated ANN values
+for (i in 1:n){
+  rand.p   <- rpoint(n=mypattern.km$n, win=ma.km)  # Generate random point locations
+  ann.r[i] <- mean(nndist(rand.p, k=1))  # Tally the ANN values
+}
+```
+
+mattpeeples.net/modules/PointPattern.html
+
+```{r}
+hist(ann.r, main=NULL, las=1, breaks=40, col="bisque", xlim=range(ann.p, ann.r))
+abline(v=ann.p, col="blue")
+```
+
+We can also calculate Kdot and Ldot which calcuate the relationship between mark i and all other types in a dataset. Here is a quick example.
+```{r}
+# Calculate L-hat between F2 and all other haplotypes
+lf.dot <- envelope(mypattern, Ldot, i = "F2", verbose = F)
+plot(lf.dot, . - r ~ r)
+```
+
+
+
+
+
+
+
+pop: An im raster layer of population density distribution.
+```{r pop_denisty_lry}
+# https://mgimond.github.io/Spatial/point-pattern-analysis.html
+# https://mgimond.github.io/Spatial/point-pattern-analysis-in-r.html
+
+sdat <- st_as_sf(df, coords = c("Long", "Lat"),
+                 crs = "+proj=longlat +datum=WGS84 +no_defs") #this makes a simple spatial obj
+#transform to local projection
+# first define proj4string for the zone
+myproj <- "+proj=utm +zone=10 +north +datum=WGS84 +units=m +no_defs"
+
+datutm <- sptransform(df, CRS(myproj))
+coordinates(datutm)
+'''
+###use idsp df made above - in utm
+
+p.sp  <- as(sdat, "Spatial") # Convert to a Spatial* object
+# now convert from sf object to ppp
+p.ppp <- as(p.sp, "ppp") #yep youve got the ppp for all samples!
+
+###STEP 2: PPP OBJ
+# Convert the dataframe to a spatial object. 
+# Note that the crs= 4326 parameter assigns a WGS84 coordinate system to the spatial object --- ASK LEIGH IF THIS THIS CORRECT PROJECTION IN UTM -- NOT IN YOUR DATA....
+
+range(df$Long) #-133.3099 -117.1424
+range(df$Lat) # 30.56667, 54.27560
+
+pp1 <- as.ppp(df$Long, df$Lat, W=ENP_buffered, marks = data.frame(df %>% dplyr::select(dlphap, GeneticID)))
+pp1<-ppp(df$Long, df$Lat, marks = data.frame(df %>% dplyr::select(dlphap, GeneticID)))
+
+spat = as.ppp(df, ENP_buffered, c(-110, -140), c(29, 55)) #only ~200 outside? Is there a problem w/ the polygon?
+
+plot(spat)
+
+summary(spat)
+plot(Kest(spat))
+plot(envelope(spat,Kest))
+plot(density(spat))
+#add characteristics as marks
+marks(spat) <- df[,c(3,4)] #doesnt work because of lost points
+plot(Smooth(spat))
+
+
+'''
+p.sf <- st_as_sf(biopsy_locs3, coords = c("Long", "Lat"), crs = 4326) 
+# have to project the spatial object for r spatial to work...
+p.sf.utm <- st_transform(p.sf, crs = "+proj=longlat +datum=WGS84") # project from geographic to UTM
+# Convert to a Spatial* object
+p.sp  <- as(p.sf.utm, "Spatial")
+# now convert from sf object to ppp
+p.ppp <- as(p.sp, "ppp") #yep youve got the ppp for all samples!
+'''
+
+
+
+###STEP 3: POP DENSITY RASTER LAYER
+
+POP <- as.im.RasterLayer(elev.r) # From the maptools package
+class(elev.im)
+
+
+---
+##now for the ppt bits
+
+marks(p.ppp) <- NULL
+# bind the study area extent to the sampling ppp
+Window(p.ppp) <- ENP_buffered
+
+#plot to check
+plot(p.ppp, main=NULL, cols=rgb(0,0,0,.2), pch=20)
+
+# check to see if the pop denisty is skewed - log transfor if is!
+hist(pop, main=NULL, las=1)
+attr(spat, "rejects")
+```
+
+
+pptrny bits
+```{r}
+
+  # Load an MA.shp polygon shapefile 
+    s  <- st_read("MA.shp")
+    w  <- as.owin(s)
+    w.km <- rescale(w, 1000)) 
+
+  # Load a starbucks.shp point feature shapefile
+    s  <- st_read("starbucks.shp")  
+    starbucks  <- as.ppp(s)
+    marks(starbucks) <- NULL
+    starbucks <- rescale(starbucks, 1000)
+    Window(starbucks) <- starbucks 
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r old dawn wizardy}
+
+temp <- biopsy_locs %>% select(Long, Lat)
+#### all samples #### (all)
+k2 <- ks::kde(temp)
+plot(k2) # check to make sure that worked
+k2_rast <- raster(k2) # convert to raster (this gets x, y, z values to line up from kde output) <-this throws a warning - ask Dawn what it means
+plot(k2_rast) # make sure it looks like k2
+k2_rast_scaled <- ((k2_rast/(maxValue(k2_rast)))* 100)  #this rescales the z values so that values go from 0 to 100 (otherwise values are tiny!)
+range(k2_rast_scaled)
+
+# Convert density contours to WGS84 for plotting below:
+#density_tot_ras_wgs84 <- projectRaster(k2_rast_scaled, crs = "+proj=longlat +datum=WGS84") #keep getting "Error in projectRaster(k2_rast_scaled, crs = "+proj=longlat +datum=WGS84") : input projection is NA" --- that's because you don't need this step!!
+density_tot_df_wgs84 <- as.data.frame(k2_rast_scaled, xy=TRUE)
+density_contour_shp_wgs84 <- rasterToContour(k2_rast_scaled,  levels = c(50, 75)) #levels is the number and interval of contours.
+density_contour_df_wgs84 <- fortify(density_contour_shp_wgs84)
+
+# Now plot!!
+all <- kd_plot(df5, "All Samples (n=606)")
+show(all)
+```
+
+##nearest neighbor ananlysis
+```{r}
+mean(nndist((mypattern)))
+clarkevans(mypattern)
+
+# values greater than one suggest a regular pattern
+
+#exploratory approach - plot nearest neighbor distance for each point
+P <- mypattern # resave pptrn to new obj
+marks(P) <- nndist(P) # add mark of nearest neighbor distance to each pt
+plot(P, markscale=.5) # now plot 
+
+# now look at the empirical distribtion of nearest neighbor distances
+plot(Gest(mypattern))
+```
+
+
+
+
+
+
+## site fidelity
+
+deer example using linear dist: https://academic.oup.com/beheco/article/28/4/983/3852261
+
+  ASK LEIGH: Can I approx a site fidelity index by taking the number of sightings? EX, number of times individual was seen in lat bin 34 vs any other lat bin, between and within years? How to account for uneven sampling effort?
+
+***Look at the fidelity w/in the home ranges....may need to permute this shit but would be strong evidence to calc home ranges and test goodness of fit to sighting history (leave on out analysis)
+
+For Sure Report:
+  - number of individuals w/only 1 observation (genetic set, photo set)
+  - annual siting rate
+
+*** Ask Leigh: Can I approx a site fidelity index w/a recap rate in 1-degree lat bin +/- 1degree nearest neighbor? Expect Mnos to have a larger home range, direct recap shows fairly high 1-degree bin fidelty 
+
+---pair all of this w/genetic diveristy//diff. measures!
+
+dolphin example:    https://onlinelibrary.wiley.com/doi/full/10.1002/ece3.3674
+
+
+
+ 
+
+ 
+Report: 
+ 
+From the total `r length(unique(samples$GeneticID))` individuals identified through genotyping, [add code for the number of recaps] were only observed once in the combined dataset (`r ` %). Of the resighted individuals, we found an average sighting rate of [ ], with a maximum [ ] per individual.
+ 
+ Within season recaptures represent ( %, n= )
+ Between season recaptures ( %, n= )
+ The longest between season sighting interval was [] years ( - ).
+ 
+The average site fidelity rate was calculated as mean of the proportion of sightings per region divided by the total number of sightings of the individuals. A site fidelity index of 0 represents an individual that had only one observation in the study; a site fidelity index of 1 represents an individual that was only recaptured within one latitude bin over the course of the sampling period.
+
+```{r}
+
+
+
+
+```
+
+
+OTHER THOUGHTS....
+
+**Overall sighting and/or annual resighting rates??
+
+To  identify  clusters  of  individuals  with  similar  degrees  of  site fidelity,  the  individuals’  values  of  site- fidelity  index,  survey- route sighting  rate,  and  fieldwork- season  sighting  rate were  used  in  an agglomerative  hierarchical  clustering  (AHC)  analysis  (Hunt  et al., 2017;  Zanardo  et al., 2016). [ https://onlinelibrary.wiley.com/doi/epdf/10.1002/ece3.3674 ]
+ 
+ 
+### Discussion draft
+ - site fidelity should be confirmed with stable isotope analysis across the wider range. add casey clarks monterey bay findings forthat subset.
+ 
+ 
+##The Secret Dreams
+ 
+ Herd analysis. Really kinda feel like I should just be doing this...
+ Genetic differences by BIAs // fidelity to BIAs
+ spatial dynamic occupancy model ( https://www.sciencedirect.com/science/article/pii/S0006320720309320 )
+ 
+## The graveyard of bad idea
+
+This is for terrestrial peeps. We got whales up in this space!
+
+
+```{r making spatial objs, echo=FALSE}
+##helpful tutorial: 
+# https://training.fws.gov/courses/references/tutorials/geospatial/CSP7304/documents/adehabitatHR.pdf
+# https://www.ckwri.tamuk.edu/sites/default/files/publication/pdfs/2017/leonard_analyzing_wildlife_telemetry_data_in_r.pdf
+
+###pkgs have 5+ sighting requirement for home range calcs
+#haps <- c("A-", "A+", "A3", "E1", "E10", "E13", "E15", "E2", "E3", "E4", "E5", "E6", "E7", "F1", "F2", "F3", "F4", "F6", "F8")  ##dont use this b/c will change based on preprocessing
+
+## need at least 5 obs to calculate a home range...so
+hap_tally <- biopsy_locs2 %>% group_by(dlphap) %>% tally() %>% dplyr::filter(n>=5) # subset to haps w/5+ sightings
+#tiny list of haps w/that have enough sightings
+haps <- hap_tally$dlphap
+
+df <- biopsy_locs2 %>% 
+  drop_na(Long) %>% #only samples w/loc info
+  filter(dlphap %in% haps)%>% #only keep samples w/hap
+  dplyr::select(Long, Lat, dlphap) %>% # subset 
+  arrange(dlphap) 
+
+#df <- as.data.frame(df) #maybe tihs fixes the 5 rcap issue? nooooope try again.
+df$dlphap <- factor(df$dlphap) # THIS should fix the factor levels! 
+
+
+# Project to get locations in UTM (meters) -- Dawn wisdom: project early, project often!
+df[c("UTM_x","UTM_y")] <- project(as.matrix(df[c("Long","Lat")]),"+proj=utm +zone=10 +datum=WGS84 +no_defs")
+
+#xy <- df %>% dplyr::select(Long, Lat) #pull loc data to make first spatial obj
+xy <- df %>% dplyr::select(UTM_x, UTM_y) # use UTM locations instead
+xy <- data.matrix(xy) #see if converting to a matrix fixes out of bounds error???
+xysp <- SpatialPoints(xy) # convert xy to a SpatialPoints obj -- can only handle ONE id per obj
+class(xysp)
+
+#this works - but need to add hap as id for kde analysis
+#clu <- clusthr(xysp) #implements the single-linkage clustering algorithm & returns a SpatialPolygonsDataFrame
+#plot(clu)
+
+# adding dlp hap as an id and converting to a SpatialPointsDataFrame
+id <- df$dlphap # subset df to only dlphap
+idsp <- data.frame(id) #probs redundant but spatial crap is finicky
+coordinates(idsp) <- xy #now convert the object id into a SpatialPointsDataFrame
+
+# #now make the clusters for each hap in hte special obj
+# clu2 <- clusthr(idsp) # should return a list of SpatialPolygonsDataFrame of class MCHu -- Multiple Convex Hull 
+# plot(clu2) #yay!
+
+```
+
+
+ 
+ Minimum Convex Polygon (MCP)
+ 
+ from tutorial: "The MCP is probably the most widely used estimation method. This method
+consists in the calculation of the smallest convex polygon enclosing all the relocations of the animal. This polygon is considered to be the home range of the animal. Because the home range has been defined as the area traversed by the animal during its normal activities of foraging, mating and caring for young (Burt, 1943), a common operation consists to first remove a small percentage of the relocations farthest from the centroid of the cloud of relocations before the estimation. Indeed, the animal may sometimes make occasionnal large moves to unusual places outside its home range, and this results into outliers that cannot be considered as “normal activities”."
+
+**Home range area unit in km2
+**use this to get the bulk of feeding ground use area for each dlp hap -- overestimate. Also land :(
+ 
+```{r mcp_calculations }
+
+#mcp calculations using the idsp spatialpoints obj created above
+
+#have to change projection to meters for home range size -- "However,	these	code	blocks also	automatically	calculate home	range	area (ha.)	and	output	this information	to	a	matrix.	In	order	to	do	this	correctly,	the	units	of	the	x	and	y	coordinates	must	be	in meters."
+
+#project data to utm - zone 10
+proj4string(idsp) <- CRS( "+proj=utm +zone=10 +datum=WGS84 +no_defs" )
+
+# Calculate MCPs for each dlphap
+dlphap.mcp <- mcp(idsp, percent = 90, unout="km2") 
+#plot(dlphap.mcp)
+as.data.frame(dlphap.mcp) # gives home range size per dlphap -
+
+#what percentage of the data should you drop to get the accurate est?
+hrs <- mcp.area(idsp[,1], percent=seq(50, 100, by = 5), unout="km2")
+ #should give you little plots - drop data beyond tail if have steep slope
+hrs # should give a df of home range size by various sighting percentages - "stable" home range size will vary little between %s
+
+#now same as above but in a pretty plot
+#library(scales) # Helps make polygons partly transparent using the alpha argument below
+#plot(idsp, col = as.factor(idsp@data$id), pch = 16)
+#plot(dlphap.mcp, col = alpha(1:5, 0.5), add = TRUE)
+
+### pretty ggplot plot
+## help here: https://jamesepaterson.github.io/jamespatersonblog/03_trackingworkshop_homeranges
+# Transform the point and MCP objects. 
+dlphap.spgeo <- spTransform(idsp, CRS("+proj=longlat"))
+dlphap.mcpgeo <- spTransform(dlphap.mcp, CRS("+proj=longlat"))
+
+# Turn the spatial data frame of points into just a dataframe for plotting in ggmap
+dlphap.geo <- data.frame(dlphap.spgeo@coords, 
+                          id = dlphap.spgeo@data$id )
+ 
+```
+
+```{r faceted_mcps, fig.cap="MCP home range estimates for each haplotype found in the eastern NP feeding grounds."}
+pie_cols <-  c("A+" = "deeppink4", "A-" = "darkgoldenrod1", "A3" = "mistyrose", "A4" = "lightpink", "A5" = "lightpink","E1" = "springgreen4", "E6" = "darkcyan","E7" = "olivedrab4","E8" = "chartreuse4","E9" = "darkseagreen1","E10" = "darkseagreen1", "E11" = "darkseagreen1","E12" = "darkseagreen1","E13" = "darkseagreen1","E14" = "darkseagreen1","E15" = "darkseagreen1","E2" = "darkseagreen1", "E3" = "green", "E4" = "darkseagreen1", "F2" = "blue", "F1" = "lightskyblue", "F3" = "lightskyblue", "F4" = "lightskyblue", "F5" = "lightskyblue", "F6" = "lightskyblue","E5" = "#8fbc8f","F7" = "lightskyblue","F8" = "lightskyblue","F9" = "lightkyblue")
+
+
+#add a world map to plot polys to
+world <- map_data("world")
+with_world <- ggplot() +
+	geom_polygon(data = world, 
+		aes(x = long, y = lat, group = group),
+		fill = "light grey", colour = "dark grey") + 
+	coord_quickmap() +  # Prevents stretching when resizing
+	theme_classic() +  # Remove ugly grey background
+	xlab("Longitude") +
+	ylab("Latitude")
+
+
+mcp_ggplot <- ggplot() +
+  geom_polygon(data = fortify(dlphap.mcpgeo),  
+               # Polygon layer needs to be "fortified" to add geometry to the dataframe
+              aes(long, lat, colour = id, fill = id),
+              alpha = 0.3) + # alpha sets the transparency
+  geom_point(data = dlphap.geo, 
+             aes(x = UTM_x, y = UTM_y, colour = id))  +  ##you might have to change these x+v values when you use whale data
+  facet_wrap(~ id)+
+  scale_colour_manual(values = pie_cols) +
+  theme_minimal() +
+  ggtitle("Minimum Convex Polygon Home Range") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  xlab("Longitude")+
+  ylab("Latitude")+
+  theme(legend.position="right") +
+  coord_fixed(xlim = c(-133, -117), ylim = c(30, 55)) 
+show(mcp_ggplot)
+
+mcp_world <- with_world  + 
+  geom_polygon(data = fortify(dlphap.mcpgeo),  
+               # Polygon layer needs to be "fortified" to add geometry to the dataframe
+              aes(long, lat, colour = id, fill = id),
+              alpha = 0.3) + # alpha sets the transparency
+  geom_point(data = dlphap.geo, 
+             aes(x = UTM_x, y = UTM_y, colour = id))  +  ##you might have to change these x+v values when you use whale data
+  facet_wrap(~ id)+
+  scale_colour_manual(values = pie_cols) +
+  annotation_map(map_data("world"), fill="light grey") + 
+  theme_minimal() +
+  ggtitle("Minimum Convex Polygon Home Range") +
+  theme(plot.title = element_text(hjust = 0.5))+
+  xlab("Longitude")+
+  ylab("Latitude")+
+  borders("state")+
+   borders("world")+
+  theme(legend.position="right") +
+  coord_fixed(xlim = c(-133, -117), ylim = c(30, 55)) 
+show(mcp_world)
+
+```
+
+
+
+
+
+- Kernel density estimates
+
+Least square cross validation kernel density estimates of "home range" by haplotpye said to better represent data, but may not handle sparse data points well [ Hemson, Graham, et al. “Are kernels the mustard? Data from global positioning system (GPS) collars suggests problems for kernel home‐range analyses with least‐squares cross‐validation.” Journal of Animal Ecology 74.3 (2005): 455-463. ] --- not valid for biopsy only dataset, can retry w/sightings or use 'regular' kde
+
+```{r kde}
+# using the projected SpatialPointsDataFrame idsp from above
+'''
+
+# import the coastline to serve as your boundary
+bound <- map_data("world2Lores")
+
+# Make sure bound CRS same as point CRS
+bound@proj4string <- idsp@proj4string
+
+map(database =bound)
+plot(idsp)
+'''
+
+#### traditional kernels
+### href kde
+kernel.ref <- kernelUD(idsp[,1], h = "href")  # href = the reference bandwidth
+image(kernel.ref)
+
+# The smoothing factor is stored for each animal in the "h" slot
+kernel.ref[[1]]@h 
+
+### lscv kde
+kudl <- kernelUD(idsp[,1], h = "LSCV")  #least square cross validation said to represent the data better, but may not resolve [other option is h = href is the default - ad hoc method for determining h ]
+image(kudl) #plots the heat map-y outputs
+plotLSCV(kudl) #check to make sure there is convergence - will some error messages about failure to converge, - looking for a dip in the CV value and the h value that corresponds to the minimum CV is used. In some instances, there is no minimum (no convergence). If not go back to href (boo).
+
+###pick the best one of above and estimate home range size!
+kernel.poly <- getverticeshr(kernel.ref, percent = 95) 
+print(kernel.poly)  # returns the area of each polygon
+
+plot(kernel.poly)
+plot(idsp, add = TRUE, col = id, pch = 21)
+
+```
+
+
+
+
+
+
+

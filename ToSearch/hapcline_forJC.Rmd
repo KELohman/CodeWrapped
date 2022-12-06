@@ -1,0 +1,227 @@
+---
+title: "Trends in haplotype frequency"
+author: "Karen Lohman"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  bookdown::word_document2:
+    reference_docx: StylesTemplate.docx
+    keep_md: true
+    fig_caption: TRUE
+---
+```{r}
+library(lme4)
+library(tidyverse)
+```
+
+
+
+## Data Sources
+### Survey Effort and Sample Collection 
+
+Field surveys documenting humpback whale occurrences were previously conducted in the California Current (CC) between 1984-2020. When encountered, the location of individual humpback whales was recorded via collection of genetic samples or uniquely identifying fluke photographs. Efforts were made to take a fluke photo at the time of tissue retrieval, linking the genetic and photographic data sets. Genetic samples were analyzed following standard protocols and using legacy markers (Baker 1994, Baker 2013). Sighting catalogs held by Cascadia Research Collective (1984-2018) were searched for observations of genetically known individuals in the CC and reconciled to produce an “encounter” data set with same-day observations removed as duplicate sampling events before analysis (Figure 1.1). Sampling was largely opportunistic. The number of available samples per region or per year is dependent on field effort at each location, producing variable sampling coverage across the study area and timeframe. 
+
+
+
+### Data Summary
+  A total of `r #(length(unique(sightings$GeneticID))-1)` individuals had a mtDNA CR haplotype and associated fluke photo. An additional `r #(nrow(encounters %>% filter(!GeneticID %in% sightings$GeneticID) %>% distinct(GeneticID)))` individuals are represented by mtDNA haplotype only and were included in the data set as single point observations at the biopsy collection location. All individuals were identified through genotyping, with an average probability of identify ranged from 5.71x10$^-$$^1$$^1$ to 2.42x10$^-$$^1$$^3$. This produced a final encounter record in the CC of `r #nrow(encounters)` observations of `r #length(unique(encounters$GeneticID))` individuals with an associated haplotype collected between 1984-2020. Comparisons of m:f sex ratios showed significant bias for SBC/WA and CA-South; this is likely due to sampling and not reflective of biological differences (i.e., avoidance of mother-calf pairs in tagging studies).
+  
+```{r SampleTable}
+## add baker 2013 table of sample per region, number haplotyes, number of photos per region, etc
+b2013 <- read.table("~/Research/Humpback_Data/outputs/fg_genotype_table.txt", sep = ",") %>%
+  dplyr::select(-Individuals) %>% 
+  rename(SexRatioPval = pVal) %>% 
+  filter(TrueRegion != "California")
+
+geo_enc <- encounters %>% 
+  drop_na(dlphap, Lat) %>% 
+  filter(dlphap != "X") %>% 
+  filter(between(Month, 5,10)) %>% 
+  group_by(TrueRegion) %>% 
+  distinct(GeneticID,TrueRegion, .keep_all = TRUE) %>% 
+  mutate(n=n())%>% 
+  ungroup() %>% 
+  filter(n >=20)
+# give dfs of encounters filtered to latbins w/15+ unique individ. encoutners per year. now tally by (latbin, year) and add to arlequin
+
+# table of haps per region for arlequin inputs
+t1 <- geo_enc %>% group_by(TrueRegion) %>% count(dlphap) %>% pivot_wider(names_from = dlphap, values_from = n)
+
+# geographic comparisons sample size
+ssizes <- (geo_enc %>% group_by(TrueRegion) %>% tally)
+
+target <- c("NBC","SBC-WA", "OR", "CA-North", "CA-Central","CA-South", "Total")
+
+ssizes <- geo_enc %>% 
+  group_by(TrueRegion) %>% 
+  summarize(EncounterIndivs=n(), NumHaps=n_distinct(dlphap))
+
+# add total row
+NumHaps <- length(unique(geo_enc$dlphap))
+EncounterIndivs <- length(unique(geo_enc$GeneticID))
+temp <- data.frame("Total", NumHaps, EncounterIndivs)
+names(temp) <- c("TrueRegion", "NumHaps","EncounterIndivs")
+
+ssizes <- bind_rows(ssizes, temp)
+
+# fix b2013 table to have same row names as enc df
+b2013$Region <- target
+
+b2013 <- left_join(b2013, ssizes, by = c("Region"="TrueRegion")) %>% 
+  select(-TrueRegion)
+col_order <- c("Region", "Samples", "QC_Samples", "Individuals_plushap", "N_Males", "N_Females", "SexRatioPval", "EncounterIndivs","NumHaps")
+b2013 <- b2013[,col_order]
+
+kable(b2013, caption = "ENP tissue sample and peak season (May-October) encounter summary. Per subregion breakdown of number of samples, number of samples passing genotyping QC, number of individuals with haplotype, number of males and females, p-value for exact binomial test of sex ratio (m:f:1), number of individuals in peak season encounters, and number of peak season encounter haplotypes per region. Sex ratio was tested for individuals per region. Note: column totals do not sum to Total row values because of allowed individual recaptures between regions.")
+
+```
+
+
+
+
+## Preliminary Results: mtDNA haplotype cline
+### Relative haplotype frequency by 1-degree latitude bin
+The peak-season (May-October) relative frequency of each haplotype was calculated as the number of individuals with that haplotype encountered per degree of latitude divided by the total number of individuals encountered in that 1-degree latitude bin. Relative frequency was limited to peak feeding season to limit the effect of migration and calculated using number of individuals rather than number of encounters to reduce the effect of sampling bias between 1) the two observation types and 2) the uneven sampling effort across the study area.
+
+### Trends in mtDNA frequency
+
+To further investigate the presence of a spatial cline by haplotype, a hierarchical linear model or mixed-effects model was fit to test the relationship between the relative frequency of each haplotype per 1-degree latitude bin using lme4 in R (R Core Team, 2019, Bates et al., 2015). 
+
+```{r setup, echo=FALSE,warning=FALSE, message=FALSE}
+
+encounters <- read.csv("~/Research/tidy_datafiles/tidy_FG_encounters.csv")%>% 
+  drop_na(Lat) %>% # we need location info for everything on this one...
+  mutate(
+    TrueRegion = case_when(
+      Lat <= 36 ~ "CA-South",
+      (Lat > 36 & Lat <= 39.9  ) ~ "CA-Central",
+      (Lat > 39.9 & Lat <= 43 ) ~ "CA-North",
+      (Lat > 43.000000 & Lat <= 46.1) ~ "OR",
+      (Lat > 46.1 & Lat <= 49.4) ~ "SBC-WA",
+      Lat > 49.4 ~ "NBC")) 
+
+encounters$Month <- format(as.Date(encounters$Date, format = "%m/%d/%y"), "%m") 
+
+# hap colors list
+pie_cols <-  c("A+" = "deeppink4", "A-" = "darkgoldenrod1", "A3" = "mistyrose", "A4" = "lightpink", "A5" = "lightpink","E1" = "springgreen4", "E6" = "darkcyan","E7" = "olivedrab4","E8" = "chartreuse4","E9" = "darkseagreen1","E10" = "darkseagreen1", "E11" = "darkseagreen1","E12" = "darkseagreen1","E13" = "darkseagreen1","E14" = "darkseagreen1","E15" = "darkseagreen1","E2" = "darkseagreen1", "E3" = "green", "E4" = "darkseagreen1", "F2" = "blue", "F1" = "lightskyblue", "F3" = "lightskyblue", "F4" = "lightskyblue", "F5" = "lightskyblue", "F6" = "lightskyblue","E5" = "#8fbc8f","F7" = "lightskyblue","F8" = "lightskyblue","F9" = "lightkyblue")
+
+### script for prepping data for rel freq regression
+# for 'peak season'
+# subset encounters to one observation of an individual per bin
+# require at least 15 individuals per haplotype to be included - annotate plot with rare hap pts??
+# double check on latbin 32....only 2 obs. set a number of individuals per bin?
+# should probably also run with whole dataset....
+
+# Filter df and compute the frequency
+pretty_encounters <- encounters %>%
+  filter(!(dlphap == "X")) %>% # drop failures
+  filter( between(Month, 5,10)) %>% # filter to peak season obs (April - Nov)
+  drop_na(Latitude_Bin) %>% # gotta have locs
+  group_by(dlphap) %>% 
+  mutate(nindiv_count = length(unique(GeneticID))) %>% 
+  ungroup() %>% 
+  distinct(GeneticID, Latitude_Bin, .keep_all = TRUE) # keeping only one obs of an indiv per bin -- not so sure about this bit but moving on...
+
+```
+
+
+
+
+# Supplemental
+
+Using the haplotyped encounters (photo-id or biopsy), there are a total of `r length(unique(pretty_encounters$GeneticID))` individuals included in this subset of data. Peak feeding season (May-October) relative haplotype frequency was calculated with each individual included only once per 1-degree of latitude bin.
+
+
+```{r supp_mat,  echo=FALSE,warning=FALSE, message=FALSE}
+
+ssizes <- pretty_encounters %>% 
+  group_by(Latitude_Bin) %>% 
+  tally()
+
+kable(ssizes, caption = "Number of individuals per 1-degree latitude bin in peak-season encounter dataset.")
+
+common_haps <- pretty_encounters %>% 
+  filter(nindiv_count >= 15) # leaves 10 haplotypes
+
+# leaves 1358 obs for rel freq calcluations 
+# summary of number of haps in common_haps df
+rel_freq_samplesizes <- common_haps %>% group_by(Latitude_Bin) %>% count(dlphap)
+rel_freq_samplesizes <- common_haps %>% group_by(dlphap) %>% tally()
+
+# calculate rel freq of each hap per lat bin
+relative_freqs <- pretty_encounters %>% 
+  group_by(Latitude_Bin, dlphap) %>% 
+  summarise(counts = n()) %>%  # count of hap occurance per bin
+  mutate(bin_sum = sum(counts)) %>% # add each lat bins own sample size column
+  mutate(freq = counts / bin_sum) %>% # calc the rel freq
+  ungroup() 
+
+simple_freqs <- relative_freqs %>% 
+  filter(dlphap %in% common_haps$dlphap) # susbet to haps that have were found in 15+ individual to drop rare
+# okay - all set for regression!
+
+### add in 0s for latbins without any whales of that hap...
+pivotd <- simple_freqs %>%
+  pivot_wider(names_from = Latitude_Bin, id_cols = dlphap, values_from = freq ) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>% 
+  arrange(dlphap,)
+
+kable(pivotd, caption = "Relative hapltoype frequency per 1-degree latitude bin as calculated using individual occurence (not raw encounter numbers).")
+
+```
+
+
+
+
+```{r echo=FALSE,warning=FALSE, message=FALSE}
+####Simple linear regression
+# # first fit one and see
+# subseta <- relative_freqs %>% 
+#   filter(dlphap == "A+")
+# 
+# 
+# fit.aplus <- lm(freq ~ Latitude_Bin, data=subseta)
+# summary(fit.aplus)
+# confint(fit.aplus) # confidence intervals
+# plot(fit.aplus)
+# 
+# 
+# par(mfrow = c(2,2))
+# # Plot residuals vs fitted values
+# plot(fit.aplus$fitted, fit.aplus$residuals,xlab="Fitted values",ylab="Residuals")
+# abline(0,0)
+
+
+## looking at data plotted can see we need random slope + random intercepts -- back to mixed effects?
+# mixed.ranslope <- lmer(freq ~ Latitude_Bin + (1 + Latitude_Bin | dlphap), data = relative_freqs) 
+# summary(mixed.ranslope)
+
+
+### plot
+mm_plot <- ggplot(simple_freqs, aes(y = freq, x = Latitude_Bin, colour = dlphap)) +
+  geom_point(data=simple_freqs,  aes(x = Latitude_Bin, y = freq, colour = dlphap))+
+  facet_wrap(~dlphap, nrow=2) +   # a panel for each haplotype
+  scale_color_manual(values = pie_cols)+
+  theme_bw() +
+  labs(x = "1-Degree Latitude Bin", y = "Relative Haplotype Frequency")+#, title = "Effect of degree of latitude on haplotype relative frequency")+
+  geom_smooth(method = "lm", se = FALSE, color="darkgrey")+
+  #geom_line(data = cbind(relative_freqs, pred = predict(mixed.ranslope)), aes(y = pred), size = 1, color="darkgrey") +  # adding predicted line from mixed model 
+  theme(legend.position = "none",
+        panel.spacing = unit(.5, "lines"))  # adding space between panels
+  #coord_flip()
+
+print(mm_plot)
+```
+
+
+
+
+
+```{r echo=FALSE,warning=FALSE, message=FALSE}
+### all in one go
+# fit_terms <- simple_freqs %>% group_by(dlphap) %>% do(tidy(lm(freq ~ Latitude_Bin, data=.))) 
+# kable(fit_terms, caption="")
+# 
+# fit_stats <- simple_freqs %>% group_by(dlphap) %>% do(glance(lm(freq ~ Latitude_Bin, data=.)))
+# kable(fit_stats, caption="")
+```
+
